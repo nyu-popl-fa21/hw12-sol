@@ -32,13 +32,20 @@ object hw12 extends js.util.JsApp {
     case (TObj(fts1), TObj(fts2)) =>
       fts2 forall { 
         case (gj, (mutj, tj)) =>
-          ???
+          fts1.get(gj) match {
+            case Some((muti, ti)) =>
+              mutj == MConst && subtype(ti, tj) ||
+              muti == mutj && ti == tj
+            case None => false
+          }
       }
       
     /** SubFun */
     case (TFunction (ts1, tret1), TFunction (ts2, tret2)) =>
-      ???
-      
+      subtype(tret1, tret2) &&
+      ts1.size == ts2.size &&
+      (ts1.lazyZip(ts2) forall { case (ti, tip) => subtype(tip, ti) })
+    
     /** SubRefl, SubAny */
     case (t1, t2) =>
       t1 == t2 || t2 == TAny
@@ -52,12 +59,18 @@ object hw12 extends js.util.JsApp {
     case (TObj(fts1), TObj(fts2)) =>
       // fts should be the field map of the join of t1 and t2
       val fts = 
-        fts1.foldLeft((Map.empty[Fld, (Mut, Typ)])) {
+        fts1.foldLeft(Map.empty[Fld, (Mut, Typ)]) {
           case (fts, (h, (mut_h, t_h))) =>
             fts2.get(h) match {
-              /** JoinObjNO, JoinObjVar, JoinObjMut_!= */
-              case None => ???
-              case Some((mutp_h, tp_h)) => ???
+              /** JoinObjNO, JoinObjLet, JoinObjMut_!= */
+              case None => fts
+              case Some((mutp_h, tp_h)) =>
+                (mut_h, mutp_h) match {
+                  case (MLet, MLet) if t_h == tp_h =>
+                    fts + (h -> (MLet, t_h))
+                  case _ =>
+                    fts + (h -> (MConst, join(t_h, tp_h)))
+                }
             }
         }
       TObj(fts)
@@ -66,12 +79,15 @@ object hw12 extends js.util.JsApp {
     case (TFunction (ts1, tret1), TFunction (ts2, tret2)) if ts1.size == ts2.size =>
       // tsopt is an Option value. It should contain the list of parameter types for the join 
       // of t1 and t2 if the join is a function type (rule JoinFunMeet). 
-      // If the join is 'Any', then tsopt should be None (rule JoinFunAny).
+      // If the join is 'any', then tsopt should be None (rule JoinFunAny).
       val tsopt = ts1.lazyZip(ts2).foldRight(Some(Nil): Option[List[Typ]]) {
         case ((t1, t2), tsopt) =>
-          ???
+          for {
+            ts <- tsopt
+            tsp <- meet(t1, t2) map (_ :: ts)
+          } yield tsp
       }
-      tsopt map(???) getOrElse TAny
+      tsopt map(TFunction(_, join(tret1, tret2))) getOrElse TAny
     
     /** JoinBasic_=, JoinAny_1, JoinAny_2, JoinObjFun, JoinFunObj */
     case _ => if (t1 == t2) t1 else TAny
@@ -87,21 +103,44 @@ object hw12 extends js.util.JsApp {
       // If merging the common fields fails (i.e., the meet does not exist), then 
       // fts_common_opt should be None.
       val fts_common_opt = 
-        fts1.foldLeft((Some(Map.empty): Option[Map[Fld, (Mut, Typ)]])) {
+        fts1.foldLeft(Some(Map.empty): Option[Map[Fld, (Mut, Typ)]]) {
           case (fts_common_opt, (h, (mut_h, t_h))) =>
             fts2.get(h) match {
-               /** MeetObjNO, MeetObjVar_=, MeetObjMut_!=, MeetObjConst */
-              case None => ???
-              case Some((mutp_h, tp_h)) => ???
+               /** MeetObjNO */
+               case None => 
+                 fts_common_opt map (_ + (h -> (mut_h, t_h)))
+               case Some((mutp_h, tp_h)) =>
+                 (mut_h, mutp_h) match {
+                   /** MeetObjLetConst */
+                   case (MLet, MConst) if subtype(t_h, tp_h) =>
+                     fts_common_opt map (_ + (h -> (MLet, t_h)))
+                   /** MeetObjConstLet */
+                   case (MConst, MLet) if subtype(tp_h, t_h) =>
+                     fts_common_opt map (_ + (h -> (MLet, tp_h)))
+                   /** MeetObjLet */
+                   case (MLet, MLet) if tp_h == t_h =>
+                     fts_common_opt map (_ + (h -> (MLet, t_h)))  
+                   /** MeetObjConst */
+                   case (MConst, MConst) =>
+                     for {
+                       tpp_h <- meet(t_h, tp_h)
+                       fts_common <- fts_common_opt
+                     } yield fts_common + (h -> (MConst, tpp_h))
+                   
+                   case _ => None
+                }
             }
         }
       for {
         fts_common <- fts_common_opt
-      } yield TObj(fts2 ++ fts_common) // rule MeetObjEmp is implicit here
+      } yield TObj(fts2 ++ fts_common) // MeetObjEmp is implicit here
     
     /** MeetFunJoin */
     case (TFunction (ts1, tret1), TFunction (ts2, tret2)) if ts1.size == ts2.size =>
-      ???
+      val ts = ts1.lazyZip(ts2).map {
+        case (t1, t2) => join(t1, t2)
+      }
+      meet(tret1, tret2) map (TFunction(ts, _))
       
     /** MeetAny_1 */
     case (t1, TAny) => Some(t1)
@@ -117,6 +156,7 @@ object hw12 extends js.util.JsApp {
   // A helper function to check whether a JS type has a function type in it.
   def hasFunctionTyp(t: Typ): Boolean = t match {
     case TFunction(_, _) => true
+    case TObj(fes) => fes exists { case (_, (_, t)) => hasFunctionTyp(t) }
     case _ => false
   }
 
@@ -173,7 +213,7 @@ object hw12 extends js.util.JsApp {
       
       /** TypeDerefFld */
       case UnOp(FldDeref(f), e) => typ(e) match {
-        case TObj(tfs) if (tfs contains f) => tfs(f)._2
+        case TObj(tfs) if tfs contains f => tfs(f)._2
         case tgot => err(tgot, e)
       } 
         
@@ -193,7 +233,11 @@ object hw12 extends js.util.JsApp {
             
           /** TypeEqual */
           case Eq | Ne => 
-            ???
+            val t1 = typ(e1)
+            val t2 = typ(e2) 
+            if (hasFunctionTyp(t1)) err(t1, e1)
+            else if (hasFunctionTyp(t2) || join(t1, t2) == TAny) err(t2, e2)
+            else TBool
           
           /** TypeInequal */
           case Lt | Le | Gt | Ge =>
@@ -217,19 +261,33 @@ object hw12 extends js.util.JsApp {
             e1 match {
               /** TypeAssignVar */
               case Var(x) =>
-                ???
+                env(x) match {
+                  case (MLet, t) => checkSubtyp(t, e2)
+                  case _ => locerr(e1)
+                }
                 
               /** TypeAssignFld */
               case UnOp(FldDeref(f), e11) =>
-                ???
-                
+                val t11 = typ(e11)
+                t11 match {
+                  case TObj(tfs) if tfs contains f =>
+                    val (mut, t1) = tfs(f)
+                    mut match {
+                      case MLet => checkSubtyp(t1, e2)
+                      case MConst => locerr(e1)
+                    }
+                  case _ => err(t11, e11)
+                }
               case _ => locerr(e1)
             }
         }
         
       /** TypeIf */
       case If(e1, e2, e3) =>
-        ???
+        checkTyp(TBool, e1)
+        val t2 = typ(e2)
+        val t3 = typ(e3)
+        join(t2, t3)
         
       /** TypeFun, TypeFunAnn, TypeFunRec */  
       case Function(p, xs, tann, e1) =>
@@ -251,7 +309,7 @@ object hw12 extends js.util.JsApp {
           case None => TFunction(xs map (_._2), typeInfer(env2, e1))
           case Some(tret) => 
             typeInfer(env2, e1) match {
-              case tbody if ??? => 
+              case tbody if subtype(tbody, tret) => 
                 TFunction(xs map (_._2), tret)
               case tbody => err(tbody, e1)
             }
@@ -260,13 +318,13 @@ object hw12 extends js.util.JsApp {
       /** TypeCall */
       case Call(e1, es) => typ(e1) match {
         case TFunction(txs, tret) if txs.length == es.length =>
-          txs.lazyZip(es).foreach(???)
+          txs.lazyZip(es).foreach(checkSubtyp)
           tret
         case tgot => err(tgot, e1)
       }
       
       /** TypeObj */
-      case ObjLit(fs) => TObj(fs transform { case (_, (mut, e)) => (mut, typ(e)) })
+      case ObjLit(fs) => TObj(fs map { case (f, (mut, e)) => (f, (mut, typ(e))) })
       
       case Addr(_) | UnOp(Deref, _) =>
         throw new IllegalArgumentException("Gremlins: Encountered unexpected expression %s.".format(e))
@@ -321,7 +379,7 @@ object hw12 extends js.util.JsApp {
   }
     
   /* 
-   * Substitutions e[er/x] (no changes compared to Homework 11)
+   * Substitutions e[er/x]
    */
   def subst(e: Expr, x: String, er: Expr): Expr = {
     require(closed(er))
@@ -344,13 +402,14 @@ object hw12 extends js.util.JsApp {
         if (p.contains(x) || (ys exists (_._1 == x))) e 
         else Function(p, ys, tann, substX(eb))
       case ObjLit(fes) => 
+        // Hint: use the mapValues method of fes
         ObjLit(fes transform { case (_, (m, e)) => (m, substX(e)) })
     }
   }
 
   
   /*
-   * Big-step interpreter (no changes compared to Homework 11)
+   * Big-step interpreter
    */
   def eval(e: Expr): State[Mem, Val] = {
     require(closed(e), "eval called on non-closed expression:\n" + e.prettyJS())
@@ -409,7 +468,10 @@ object hw12 extends js.util.JsApp {
  
       /** EvalDerefFld */
       case UnOp(FldDeref(f), e) =>
-        ???
+        for { 
+          a <- eToAddr(e)
+          fs <- readObj(a)
+        } yield fs getOrElse(f, throw StuckError(e))
       
       /** EvalPlusNum, EvalPlusStr */
       case BinOp(Plus, e1, e2) =>
@@ -437,14 +499,14 @@ object hw12 extends js.util.JsApp {
       case BinOp(And, e1, e2) => 
         for {
           b <- eToBool(e1)
-          v <- if (b) eval(e2) else State insert[Mem,Val] (Bool(b))
+          v <- if (b) eval(e2) else State insert[Mem,Val] Bool(b)
         } yield v
       
       /** EvalOrFalse, EvalOrTrue */
       case BinOp(Or, e1, e2) =>
         for {
           b <- eToBool(e1)
-          v <- if (b) State insert[Mem,Val] (Bool(b)) else eval(e2)
+          v <- if (b) State insert[Mem,Val] Bool(b) else eval(e2)
         } yield v
       
       /** EvalSeq */
@@ -463,7 +525,12 @@ object hw12 extends js.util.JsApp {
       
       /** EvalAssignFld */
       case BinOp(Assign, UnOp(FldDeref(f), e1), e2) =>
-        ???
+        for {
+          v2 <- eval(e2)
+          a  <- eToAddr(e1)
+          o <- readObj(a)
+          _  <- State write { m: Mem => m + (a -> Obj(o + (f -> v2))) }
+        } yield v2
       
       /** EvalInequalNum, EvalInequalStr */
       case BinOp(bop@(Eq|Ne|Lt|Gt|Le|Ge), e1, e2) =>
@@ -490,7 +557,7 @@ object hw12 extends js.util.JsApp {
           v <- eval(subst(eb, x, vd))
         } yield v
       
-      /** EvalVarDecl */
+      /** EvalLetDecl */
       case Decl(MLet, x, ed, eb) =>
         for {
           vd <- eval(ed)
@@ -527,9 +594,12 @@ object hw12 extends js.util.JsApp {
         val state0 = State.insert[Mem, Map[String, Val]](Map.empty)
         fes.foldLeft(state0) {
           case (state, (fi, (_, ei))) =>
-            ???
+            for {
+              o <- state
+              vi <- eval(ei)
+            } yield o + (fi -> vi)
         } flatMap {
-          o => ???
+          o => Mem.alloc(Obj(o))
         }
         
       case Var(_) | UnOp(Deref, _) | BinOp(_, _, _) => 
@@ -567,7 +637,7 @@ object hw12 extends js.util.JsApp {
     handle(fail()) {
       if (config.typeCheck) { 
         val t = typeInfer(Map.empty, expr)
-        if (debug) println("Inferred type: " + t.pretty())
+        if (debug) println("Inferred type:" + t.pretty())
       }
     }
     

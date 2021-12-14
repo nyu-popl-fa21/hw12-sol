@@ -1,6 +1,6 @@
 package popl
 
-import hw12_golden._
+import hw12._
 import org.scalatest.flatspec.AnyFlatSpec
 import js.ast._
 import popl.js.util.JsException
