@@ -1,6 +1,6 @@
 ## Homework 12
 
-The deadline for Homework 12 is Wednesday, December 15, 4pm. The late submission deadline is Saturday, December 18, 4pm.
+The deadline for Homework 12 is Thursday, December 16, 4pm. The late submission deadline is Saturday, December 18, 4pm.
 
 Refer to the homework handout [`hw12.pdf`](hw12.pdf) for details about the assignment. This file provides some information to help you get started with setting up your development environment for the homework assignments.
 
